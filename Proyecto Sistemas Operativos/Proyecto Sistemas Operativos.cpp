@@ -6,6 +6,51 @@
 #include <sys/wait.h>
 #define MAX_INPUT 1024
 #define MAX_ARGS 64
+#define MAX_HISTORY 100 // Maximo de comandos en el historial 
+#define MAX_COMMAND_LENGHT 1024 // Numero maximo de caracteres por comando
+
+static char history[MAX_HISTORY][MAX_COMMAND_LENGHT]; 
+static int history_count = 0; 
+static int current_index = 0; 
+
+
+// Funcion para agregar comandos al historial
+void add_to_history(char constr *cmd)
+{
+    if (MAX_HISTORY < MAX_HISTORY)
+    {
+        strncpy(history[history_count], cmd, MAX_COMMAND_LENGHT -1);
+        history[history_count][MAX_COMMAND_LENGHT - 1] = '\0'; 
+        history_count++; 
+    }
+
+    current_index = history_count; 
+}
+
+const char* get_history_up()
+{
+    if (current_index > 0)
+    {
+        current_index--; 
+        return history[current_index]; 
+    }
+    return NULL; 
+}
+
+const char* get_history_down()
+{
+    if (current_index < history_count - 1)
+    {
+        current_index++; 
+        return history[history_count]; 
+    }
+    else
+    {
+        current_index = history_count; 
+        return ""; 
+    }
+}
+
 
 int main()
 {
