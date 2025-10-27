@@ -1,6 +1,9 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <cstring>
+#include <cstdlib>
 // Estas librerias no las logra compilar ya que esta en windows y son para Unix/linux
 #include <unistd.h> // Para fork(), execvp(), chdir(), read()
 #include <sys/wait.h> // Para waitpid()
@@ -12,7 +15,7 @@
 #define MAX_COMMAND_LENGHT 1024 // Numero maximo de caracteres por comando
 
 // Almacenamiento del historial de comandos
-static char history[MAX_HISTORY][MAX_COMMAND_LENGHT];
+static std::string history[MAX_HISTORY];
 static int history_count = 0; // Contador de comandos en historial
 static int current_index = 0; // Índice actual para navegación
 
@@ -40,13 +43,12 @@ void enable_raw_mode()
 }
 
 // Funcion para agregar comandos al historial
-void add_to_history(const char* cmd)
+void add_to_history(const std::string& cmd)
 {
     // Verificar que hay espacio en el historial
     if (history_count < MAX_HISTORY)
     {
-        strncpy(history[history_count], cmd, MAX_COMMAND_LENGHT - 1); // Copia el comando al historial
-        history[history_count][MAX_COMMAND_LENGHT - 1] = '\0';
+        history[history_count] = cmd;
         history_count++; // Incrementar contador
     }
 
@@ -59,9 +61,9 @@ const char* get_history_up()
     if (current_index > 0)
     {
         current_index--; // Decrementa el índice
-        return history[current_index]; // Regresa el comando
+        return history[current_index].c_str(); // Regresa el comando
     }
-    return NULL;
+    return nullptr;
 }
 
 // Recupera el siguiente comando
@@ -70,7 +72,7 @@ const char* get_history_down()
     if (current_index < history_count - 1)
     {
         current_index++; // Incrementar índice
-        return history[current_index];
+        return history[current_index].c_str();
     }
     else
     {
@@ -84,7 +86,7 @@ void print_history()
 {
     for (int i = 0; i < history_count; i++)
     {
-        printf("%s\n", history[i]);
+        std::cout << history[i] << std::endl;
     }
 }
 
@@ -106,7 +108,7 @@ void read_input(char* buffer)
         if (c == '\n')
         {
             buffer[len] = '\0'; // Terminar string
-            printf("\n");
+            std::cout << std::endl;
             break;
         }
 
@@ -117,8 +119,8 @@ void read_input(char* buffer)
             {
                 len--; // Decrementar longitud
                 buffer[len] = '\0'; // Actualizar buffer
-                printf("\b \b"); // Borrar carácter en terminal
-                fflush(stdout);
+                std::cout << "\b \b"; // Borrar carácter en terminal
+                std::cout.flush();
             }
         }
         // Checa si se presionaron las flechas para arriba o abajo
@@ -141,13 +143,13 @@ void read_input(char* buffer)
                             // Limpia línea actual
                             for (int i = 0; i < len; i++)
                             {
-                                printf("\b \b");
+                                std::cout << "\b \b";
                             }
 
                             // Copiar comando del historial al buffer
                             len = snprintf(buffer, MAX_INPUT, "%s", prevCmd);
-                            printf("%s", buffer); // Muestra el comando
-                            fflush(stdout);
+                            std::cout << buffer; // Muestra el comando
+                            std::cout.flush();
                         }
                     }
 
@@ -159,22 +161,22 @@ void read_input(char* buffer)
                         // Limpia la linea actual
                         for (int i = 0; i < len; i++)
                         {
-                            printf("\b \b");
+                            std::cout << "\b \b";
                         }
 
                         if (nextCmd && strlen(nextCmd) > 0)
                         {
                             // Copia el siguiente comando al buffer
                             len = snprintf(buffer, MAX_INPUT, "%s", nextCmd);
-                            printf("%s", buffer); // Muestra el comando
-                            fflush(stdout);
+                            std::cout << buffer; // Muestra el comando
+                            std::cout.flush();
                         }
                         // No hay siguiente comando 
                         else
                         {
                             len = 0;
                             buffer[len] = '\0';
-                            fflush(stdout);
+                            std::cout.flush();
                         }
                     }
                 }
@@ -199,12 +201,44 @@ int main()
     char input[MAX_INPUT]; // Buffer para entrada del usuario
     char* args[MAX_ARGS]; // Array de argumentos para comandos
 
+    // Hashmap de comandos internos (built-in commands)
+    std::unordered_map<std::string, std::function<bool(char* [])>> command;
+
+    // Comando "exit"
+    command["exit"] = [](char* []) -> bool 
+        {
+            std::cout << "Program ended" << std::endl;
+            exit(0);
+            return true;
+        };
+
+    // Comando "print_history"
+    command["print_history"] = [](char* []) -> bool 
+        {
+            print_history();
+            return true;
+        };
+
+    // Comando "cd"
+    command["cd"] = [](char* args[]) -> bool 
+        {
+            if (args[1] == nullptr)
+            {
+                std::cerr << "cd: Missing argument" << std::endl;
+            }
+            else if (chdir(args[1]) != 0)
+            {
+                perror("cd failed");
+            }
+            return true;
+        };
+
     // Bucle principal
-    while (1)
+    while (true)
     {
         // Mostrar prompt
-        printf("tsh>");
-        fflush(stdout);
+        std::cout << "tsh>";
+        std::cout.flush();
 
         read_input(input);  // Leer entrada del usuario
 
@@ -219,43 +253,28 @@ int main()
 
         add_to_history(input); // Agrega el comando al historial
 
-        // Revisa si el comando es exit para terminar el programa
-        if (strcmp(input, "exit") == 0)
-        {
-            printf("Program ended\n");
-            break;
-        }
 
-        // Revisa si el comando es para ver el historial
-        if (strcmp(input, "print_history") == 0)
-        {
-            print_history();
-            continue;
-        }
 
         // Tokenizar la entrada en argumentos
         char* token = strtok(input, " ");
         int i = 0;
 
-        while (token != NULL && i < MAX_ARGS)
+        while (token != nullptr && i < MAX_ARGS)
         {
             args[i] = token; // Almacena argumento
-            token = strtok(NULL, " ");  // Siguiente token
+            token = strtok(nullptr, " ");  // Siguiente token
             i++;
         }
-        args[i] = NULL; // Terminar array con NULL
+        args[i] = nullptr; // Terminar array con NULL
 
-        // REvisa si el comando es cd - cambiar directorio
-        if (strcmp(args[0], "cd") == 0)
+        std::string cmd = args[0];
+
+        // Verifica si el comando está en el hashmap
+        auto it = command.find(cmd);
+        if (it != command.end())
         {
-            if (args[1] == NULL)
-            {
-                fprintf(stderr, "cd: Missing argument\n");
-            }
-            else if (chdir(args[1]) != 0)
-            {
-                perror("cd failed");
-            }
+            // Ejecuta el comando interno
+            it->second(args);
             continue;
         }
 
@@ -275,7 +294,7 @@ int main()
             // Parent process
             int status;
             waitpid(pid, &status, 0); // Esperar que el hijo termine
-            printf("Exit status: %d\n", WEXITSTATUS(status));
+            std::cout << "Exit status: " << WEXITSTATUS(status) << std::endl;
         }
         else
         {
