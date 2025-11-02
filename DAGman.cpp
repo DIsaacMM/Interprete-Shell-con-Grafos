@@ -1,11 +1,10 @@
 ﻿#include <bits/stdc++.h>
 using namespace std;
 
-/*--------------------------------------------------------------
-    ENUMERACIÓN: Status
-    Representa el estado actual de un nodo (tarea)
---------------------------------------------------------------*/
-enum class Status {
+
+//    Estado actual de un nodo (tarea)
+enum class Status
+{
     PENDING,  // La tarea aún no se ha ejecutado
     RUNNING,  // Está ejecutándose actualmente
     SUCCESS,  // Terminó exitosamente (exit code == 0)
@@ -44,21 +43,19 @@ void logmsg(const string& msg)
     cout << "[" << put_time(localtime(&now), "%H:%M:%S") << "] " << msg << endl;
 }
 
-//Funcion para ejecutar un comando en el shell del sistema.
-    
---------------------------------------------------------------*/
+//Funcion para ejecutar un comando en el shell del sistema. Esta funcion se va a quitar posiblemente
 bool run_command(const string& cmd) {
     int rc = system(cmd.c_str());
     return rc == 0; //Retorna true si el comando devuelve código de salida 0.
 }
 
-/*--------------------------------------------------------------
+/*
     FUNCIÓN: worker_thread
     Cada hilo del pool ejecuta esta función en bucle.
     - Espera a que haya nodos listos en la cola.
     - Ejecuta el comando del nodo.
     - Actualiza dependencias de sus hijos.
---------------------------------------------------------------*/
+*/
 void worker_thread() {
     while (true) {
         shared_ptr<Node> node;
@@ -86,13 +83,16 @@ void worker_thread() {
         bool ok = run_command(node->cmd);
 
         // Evaluar resultado
-        if (ok) {
+        if (ok) 
+        {
             node->status = Status::SUCCESS;
             logmsg("Completado: " + node->id);
         }
-        else {
+        else 
+        {
             node->retries++;
-            if (node->retries <= max_retries) {
+            if (node->retries <= max_retries) 
+            {
                 // Si puede reintentarse, lo reencola
                 node->status = Status::PENDING;
                 logmsg("Falló: " + node->id + " (Reintento " + to_string(node->retries) + ")");
@@ -104,7 +104,8 @@ void worker_thread() {
                 active_tasks--;
                 continue;
             }
-            else {
+            else 
+            {
                 node->status = Status::FAILED;
                 logmsg("Falló permanentemente: " + node->id);
             }
@@ -171,7 +172,8 @@ void parse_dag_file(const string& filename)
         {
             stringstream ss(deps_str);
             string dep;
-            while (getline(ss, dep, ',')) {
+            while (getline(ss, dep, ',')) 
+            {
                 if (!dep.empty())
                     node->deps.push_back(dep);
             }
@@ -211,7 +213,9 @@ bool detect_cycle() {
 
     for (auto& [id, _] : nodes)
         if (state[id] == 0 && dfs(id))
+        {
             return true; // Regresa true si existe un ciclo
+        }
 
     return false;
 }
