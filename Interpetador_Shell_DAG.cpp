@@ -1,4 +1,4 @@
-// Librerias Interpretador Shell
+Ôªø// Librerias Interpretador Shell
 	#include <iostream>
 	#include <string>
 	#include <vector>
@@ -15,8 +15,8 @@
 	using namespace std;
 
 // Variables Globales Interpetador Shell
-	#define MAX_INPUT 1024 // TamaÒo m·ximo de una lÌnea de entrada
-	#define MAX_ARGS 64 // N˙mero m·ximo de argumentos en un comando
+	#define MAX_INPUT 1024 // Tama√±o m√°ximo de una l√≠nea de entrada
+	#define MAX_ARGS 64 // N√∫mero m√°ximo de argumentos en un comando
 	#define MAX_HISTORY 100 // Maximo de comandos en el historial 
 	#define MAX_COMMAND_LENGHT 1024 // Numero maximo de caracteres por comando
 
@@ -24,20 +24,20 @@
 	unordered_map<string, shared_ptr<Node>> nodes; // Hash map global de nodos
 	mutex q_mtx, log_mtx;                          // Mutex para proteger que los hilos de las cola y logs entren a las seccion critica 
 	deque<shared_ptr<Node>> ready_q;               // Cola de tareas listas
-	condition_variable q_cv;                       // Sistema de notificaciÛn que despierta a los hilos cuando hay trabajo
+	condition_variable q_cv;                       // Sistema de notificaci√≥n que despierta a los hilos cuando hay trabajo
 	atomic<int> remaining_tasks{ 0 };                // Contador atomico de tareas restantes por terminar
-	atomic<int> active_tasks{ 0 };                   // Contador atomico de tareas que est·n ejecut·ndose
-	int max_concurrency = 4;                       // M·ximo de tareas (hilos) que pueden ejecutarse simultaneamente
-	int max_retries = 1;                           // Reintentos m·ximos por tarea
+	atomic<int> active_tasks{ 0 };                   // Contador atomico de tareas que est√°n ejecut√°ndose
+	int max_concurrency = 4;                       // M√°ximo de tareas (hilos) que pueden ejecutarse simultaneamente
+	int max_retries = 1;                           // Reintentos m√°ximos por tarea
 
 // Estructuras Interpretador Shell
 	// Almacenamiento del historial de comandos
 		static std::string history[MAX_HISTORY];
 		static int history_count = 0; // Contador de comandos en historial
-		static int current_index = 0; // Õndice actual para navegaciÛn
+		static int current_index = 0; // √çndice actual para navegaci√≥n
 
-	// ConfiguraciÛn de terminal para modo raw
-		static struct termios orig_termios; // ConfiguraciÛn original de la terminal
+	// Configuraci√≥n de terminal para modo raw
+		static struct termios orig_termios; // Configuraci√≥n original de la terminal
 
     // Hashmap de comandos internos (built-in commands)
         std::unordered_map<std::string, std::function<bool(char* [])>> command;
@@ -46,10 +46,10 @@
 	//    Estado actual de un nodo (tarea)
 		enum class Status
 		{
-			PENDING,  // La tarea a˙n no se ha ejecutado
-			RUNNING,  // Est· ejecut·ndose actualmente
-			SUCCESS,  // TerminÛ exitosamente (exit code == 0)
-			FAILED    // FallÛ definitivamente tras agotar reintentos
+			PENDING,  // La tarea a√∫n no se ha ejecutado
+			RUNNING,  // Est√° ejecut√°ndose actualmente
+			SUCCESS,  // Termin√≥ exitosamente (exit code == 0)
+			FAILED    // Fall√≥ definitivamente tras agotar reintentos
 		};
 
 	// Estructura de nodo con informacion de una tarea
@@ -59,9 +59,9 @@
 			string cmd;                                 // Comando shell a ejecutar
 			vector<string> deps;                        // Lista de dependencias (archivos previos)
 			vector<string> children;                    // Nodos que dependen de este nodo
-			atomic<int> indeg{ 0 };                     // N˙mero de dependencias pendientes (in-degree)
+			atomic<int> indeg{ 0 };                     // N√∫mero de dependencias pendientes (in-degree)
 			atomic<Status> status{ Status::PENDING };   // Estado actual
-			int retries = 0;                            // N˙mero de intentos realizados
+			int retries = 0;                            // N√∫mero de intentos realizados
 		};
 
 // Funciones Interpretador Shell
@@ -119,11 +119,242 @@
             active_tasks = 0;
 
         // 1. Parsear todos los comandos y crear nodos
-            for (const string& dag_cmd : dag_commands)
+            for (const string& dag_cmd : dag_commands) // For recorre cada comando en el vector de comandos
             {
+                // Parsear el comando DAG: ArchivoSalida - Comando - Dependencias
+                size_t first_dash = dag_cmd.find(" - "); // Busca el primer " - " en el comando DAG
+                size_t second_dash = dag_cmd.find(" - ", first_dash + 3); // Busca el segundo " - " empezando despues del primero
 
+                // Verifica si no se encontr√≥ el primer separador (formato inv√°lido)
+                    if (first_dash == string::npos)
+                    {
+                        cout << "Error: Formato inv√°lido en comando: " << dag_cmd << endl;
+                        continue;
+                    }
+                
+                
+                string output_file = dag_cmd.substr(0, first_dash); // Extrae el nombre del archivo de salida (desde inicio hasta primer separador)
+                string command; // Se declara un string para los comamdos
+                vector<string> dependencies; // Se declara un vector para llevar cuenta de las dependencias
+
+                // Verifica si no hay segundo separador (solo comando sin dependencias)
+                    if (second_dash == string::npos)
+                    {
+                        // Solo hay comando, sin dependencias
+                        command = dag_cmd.substr(first_dash + 3); // Extrae el comando (despu√©s del primer separador hasta el final)
+                    }
+                    else
+                    {
+                        // Hay comando y dependencias
+                            command = dag_cmd.substr(first_dash + 3, second_dash - (first_dash + 3)); // Extrae el comando (entre primer y segundo separador)
+                            string deps_str = dag_cmd.substr(second_dash + 3); // Extrae la cadena de dependencias (despu√©s del segundo separador)
+
+                        // Parsear dependencias separadas por comas
+                        size_t start = 0;
+                        size_t end = deps_str.find(',');
+                        
+                        // Itera sobre todas las dependencias separadas por comas
+                            while (end != string::npos)
+                            {
+                                // Agrega cada dependencia al vector
+                                    dependencies.push_back(deps_str.substr(start, end - start));
+                                    start = end + 1;
+                                    end = deps_str.find(',', start);
+                            }
+                        dependencies.push_back(deps_str.substr(start)); // Agrega la √∫ltima dependencia (despu√©s de la √∫ltima coma)
+                    }
+
+                // Crear Nodo
+                auto node = make_shared<Node>(); // Crea un nuevo nodo usando smart pointer (shared_ptr)
+               
+                // Configura las propiedades del nodo
+                    node->id = output_file;                     // ID = archivo de salida
+                    node->cmd = command;                        // Comando a ejecutar
+                    node->deps = dependencies;                  // Lista de dependencias
+                    node->status = Status::PENDING;             // Estado inicial: pendiente
+                    node->retries = 0;                          // Contador de reintentos en 0
+                    node->indeg = dependencies.size();          // Grado de entrada = n√∫mero de dependencias
+
+                
+                    
+                nodes[output_file] = node;  // Almacena el nodo en el mapa usando el output_file como clave
+                cout << "Nodo creado: " << output_file << " -> " << command << endl; // Muestra informaci√≥n del nodo creado
+                
+                // Si hay dependencias, las muestra
+                    if (!dependencies.empty())
+                    {
+                        cout << "  Dependencias: ";
+                        for (const auto& dep : dependencies)
+                        {
+                            cout << dep << " ";
+                        }
+                        cout << endl;
+                    }
             }
+            
+            // 2. Construir relaciones de hijos y verificar dependencias
+                for (const auto& pair : nodes) // Itera sobre cada par clave-valor en el mapa de nodos
+                {
+                    const auto& node = pair.second; // Obtiene el nodo actual del par (pair.second contiene el shared_ptr<Node>)
+                
+                    for (const string& dep : node->deps) // Itera sobre cada dependencia del nodo actual
+                    {
+                        // Verifica si la dependencia existe en el mapa de nodos
+                            if (nodes.find(dep) == nodes.end())
+                            {
+                                cout << "Error: Dependencia '" << dep << "' no encontrada para nodo '" << node->id << "'" << endl; // Si la dependencia no existe muestra error y termina la ejecuci√≥n
+                                return;
+                            }
+                    
+                         nodes[dep]->children.push_back(node->id); // Si la dependencia existe, agrega el nodo actual como hijo de la dependencia
+                    }
+                }
 
+            // 3. Inicializar cola de tareas listas (sin dependencias)
+                {
+                    lock_guard<mutex> lock(q_mtx); // Crea un lock_guard para sincronizar el acceso a la cola (evita condiciones de carrera)
+                
+                    for (const auto& pair : nodes) // Itera sobre todos los nodos en el mapa para encontrar los listos para ejecutar
+                    {
+                        if (pair.second->indeg == 0) // Verifica si el nodo tiene grado de entrada 0 (no tiene dependencias pendientes)
+                        {
+                            ready_q.push_back(pair.second);  // Agrega el nodo a la cola de listos para ejecuci√≥n
+                        }
+                    }
+                    remaining_tasks = nodes.size();  // Inicializa el contador de tareas pendientes con el total de nodos
+                }
+            
+                // Muestra informaci√≥n de depuraci√≥n sobre el estado inicial
+                    cout << "Nodos listos para ejecutar: " << ready_q.size() << endl;
+                    cout << "Total de nodos: " << nodes.size() << endl;
+
+            // 4. Crear hilos workers
+
+                    vector<thread> workers; // Crea un vector para almacenar los threads workers
+                    
+                    for (int i = 0; i < max_concurrency; ++i) // Crea tantos workers como el m√°ximo de concurrencia especificado
+                    {
+                        // Crea un nuevo thread worker con una funci√≥n lambda
+                        workers.emplace_back([i]() 
+                            {
+                                // Ciclo while que se ejecutara hasta que no haya trabajo 
+                                    while (true)
+                                    {
+                                        shared_ptr<Node> task;
+
+                                        // Obtener tarea de la cola
+                                        {
+                                            unique_lock<mutex> lock(q_mtx); // Usa unique_lock para la variable condici√≥n (permite unlock/relock)
+                                            
+                                            // Espera hasta que haya tareas en la cola O no queden tareas pendientes
+                                                q_cv.wait(lock, []()
+                                                    {
+                                                        return !ready_q.empty() || remaining_tasks == 0;
+                                                    });
+
+                                            // Condici√≥n de salida: cola vac√≠a y no quedan tareas pendientes
+                                                if (ready_q.empty() && remaining_tasks == 0)
+                                                {
+                                                    break;
+                                                }
+                                            // Si hay tareas en la cola, toma una
+                                                if (!ready_q.empty())
+                                                {
+                                                    task = ready_q.front();  // Obtiene la primera tarea
+                                                    ready_q.pop_front();     // La remueve de la cola
+                                                    active_tasks++;          // Incrementa contador de tareas activas
+                                                }
+                                        }
+                                        
+                                        // Si se obtuvo una tarea v√°lida, procesarla
+                                            if (task)
+                                            {
+                                                // Ejecutar la tarea
+                                                task->status = Status::RUNNING; // Cambia el estado de la tarea a "ejecut√°ndose"
+
+                                                // Log: informa que comienza la ejecuci√≥n
+                                                    {
+                                                        lock_guard<mutex> log_lock(log_mtx);
+                                                        cout << "[Worker " << i << "] Ejecutando: " << task->id << " -> " << task->cmd << endl;
+                                                    }
+
+                                                // Ejecutar comando del sistema
+                                                    int result = system(task->cmd.c_str());
+
+                                                    // Log: informa el resultado de la ejecuci√≥n
+                                                        {
+                                                            lock_guard<mutex> log_lock(log_mtx);
+                                                            if (result == 0)
+                                                            {
+                                                                cout << "[Worker " << i << "] ‚úì √âxito: " << task->id << endl;
+                                                                task->status = Status::SUCCESS;
+                                                            }
+                                                            else
+                                                            {
+                                                                cout << "[Worker " << i << "] ‚úó Fallo: " << task->id << " (c√≥digo: " << result << ")" << endl;
+                                                                task->status = Status::FAILED;
+                                                            }
+                                                        }
+
+                                                // Notificar a los hijos que esta tarea termin√≥
+                                                {
+                                                    lock_guard<mutex> lock(q_mtx);
+                                                    active_tasks--;      // Reduce contador de tareas activas
+                                                    remaining_tasks--;   // Reduce contador de tareas pendientes totales
+
+                                                    
+                                                    for (const string& child_id : task->children)  // Para cada nodo hijo (dependiente) de esta tarea
+                                                    {
+                                                        auto child = nodes[child_id];
+                                                        // Reduce el grado de entrada del hijo
+                                                            if (--(child->indeg) == 0)
+                                                            {
+                                                                ready_q.push_back(child); // Si ya no tiene dependencias pendientes, lo agrega a la cola
+                                                            }
+                                                    }
+                                                }
+
+                                                q_cv.notify_all(); // Notifica a todos los workers que el estado cambi√≥
+                                            }
+                                    }
+                            });
+                    }
+
+            // 5. Esperar a que todos los workers terminen
+                for (auto& worker : workers)
+                {
+                    worker.join();
+                }
+            
+
+            // Paso 6: Reporte final
+                cout << "\n EJECUCI√ìN DAG COMPLETADA " << endl;
+                int success_count = 0;
+                int failed_count = 0;
+
+                for (const auto& pair : nodes)
+                {
+                    if (pair.second->status == Status::SUCCESS)
+                    {
+                        success_count++;
+                    }
+                    else if (pair.second->status == Status::FAILED)
+                    {
+                        failed_count++;
+                        cout << "Fallo: " << pair.first << endl;
+                    }
+                }
+
+                cout << "Resumen: " << success_count << " √©xitos, " << failed_count << " fallos" << endl;
+
+                if (failed_count == 0)
+                {
+                    cout << "Todos los comandos se ejecutaron exitosamente" << endl;
+                }
+                else
+                {
+                    cout << "Algunos comandos fallaron" << endl;
+                }
     }
 
 // Funciones Interpretador_Shell
@@ -137,15 +368,15 @@
     // Activa el modo raw (sin buffering, sin echo)
         void enable_raw_mode()
         {
-            tcgetattr(STDIN_FILENO, &orig_termios); // Obtener configuraciÛn actual de la terminal
-            atexit(disable_raw_mode); // Registrar funciÛn de limpieza al salir
+            tcgetattr(STDIN_FILENO, &orig_termios); // Obtener configuraci√≥n actual de la terminal
+            atexit(disable_raw_mode); // Registrar funci√≥n de limpieza al salir
 
             struct termios raw = orig_termios; // Configurar nueva estructura para modo raw
-            raw.c_lflag &= ~(ECHO | ICANON); // Desactivar echo y modo canÛnico
-            raw.c_cc[VMIN] = 1; // MÌnimo de caracteres a leer
+            raw.c_lflag &= ~(ECHO | ICANON); // Desactivar echo y modo can√≥nico
+            raw.c_cc[VMIN] = 1; // M√≠nimo de caracteres a leer
             raw.c_cc[VTIME] = 0; // Timeout de lectura
 
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw); // Aplica la nueva configuraciÛn
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw); // Aplica la nueva configuraci√≥n
         }
 
     // Funcion para agregar comandos al historial
@@ -158,7 +389,7 @@
                 history_count++; // Incrementar contador
             }
 
-            current_index = history_count;  // Actualiza el Ìndice actual al final del historial
+            current_index = history_count;  // Actualiza el √≠ndice actual al final del historial
         }
 
     // Recupera el comando anterior
@@ -166,7 +397,7 @@
         {
             if (current_index > 0)
             {
-                current_index--; // Decrementa el Ìndice
+                current_index--; // Decrementa el √≠ndice
                 return history[current_index].c_str(); // Regresa el comando
             }
             return nullptr;
@@ -177,13 +408,13 @@
         {
             if (current_index < history_count - 1)
             {
-                current_index++; // Incrementar Ìndice
+                current_index++; // Incrementar √≠ndice
                 return history[current_index].c_str();
             }
             else
             {
                 current_index = history_count; // Ir al final del historial
-                return ""; // Retornar string vacÌo
+                return ""; // Retornar string vac√≠o
             }
         }
 
@@ -196,16 +427,16 @@
             }
         }
 
-    // Lee una lÌnea del usuario, permite el uso de las flechas y backspace
+    // Lee una l√≠nea del usuario, permite el uso de las flechas y backspace
         void read_input(char* buffer)
         {
             int len = 0; // Longitud actual del buffer
-            buffer[len] = '\0'; // Inicializar buffer vacÌo
+            buffer[len] = '\0'; // Inicializar buffer vac√≠o
 
-            current_index = history_count;  // Configurar Ìndice actual para navegaciÛn
+            current_index = history_count;  // Configurar √≠ndice actual para navegaci√≥n
             enable_raw_mode(); // Activa modo Raw
 
-            char c; // Car·cter leÌdo
+            char c; // Car√°cter le√≠do
 
             // Ciclo para leer los caracteres uno por uno
             while (read(STDIN_FILENO, &c, 1) == 1)
@@ -225,7 +456,7 @@
                     {
                         len--; // Decrementar longitud
                         buffer[len] = '\0'; // Actualizar buffer
-                        std::cout << "\b \b"; // Borrar car·cter en terminal
+                        std::cout << "\b \b"; // Borrar car√°cter en terminal
                         std::cout.flush();
                     }
                 }
@@ -246,7 +477,7 @@
 
                                 if (prevCmd)
                                 {
-                                    // Limpia lÌnea actual
+                                    // Limpia l√≠nea actual
                                     for (int i = 0; i < len; i++)
                                     {
                                         std::cout << "\b \b";
@@ -293,17 +524,14 @@
                 {
                     if (len < MAX_INPUT - 1)
                     {
-                        buffer[len++] = c; // Agregar car·cter al buffer
-                        buffer[len] = '\0'; // Mantiene la terminaciÛn nula
+                        buffer[len++] = c; // Agregar car√°cter al buffer
+                        buffer[len] = '\0'; // Mantiene la terminaci√≥n nula
                     }
-                    write(STDOUT_FILENO, &c, 1); // Muestra el car·cter en terminal
+                    write(STDOUT_FILENO, &c, 1); // Muestra el car√°cter en terminal
                 }
             }
             disable_raw_mode(); // Restaura el modo normal de la terminal
         }
-
-
-
 
 
 //Funcion Main Principal 
@@ -366,7 +594,7 @@
 
             read_input(input);  // Leer entrada del usuario
 
-            // Elimina saltos de lÌnea o retorno de carro
+            // Elimina saltos de l√≠nea o retorno de carro
             input[strcspn(input, "\r\n")] = 0;
 
             // Checa si la entrada esta vacia
@@ -393,7 +621,7 @@
 
             std::string cmd = args[0];
 
-            // Verifica si el comando est· en el hashmap
+            // Verifica si el comando est√° en el hashmap
             auto it = command.find(cmd);
             if (it != command.end())
             {
