@@ -11,7 +11,16 @@
 	#include <termios.h> // Para usar modo raw en la terminal
 
 // Libreria para DAGman
-	#include <bits/stdc++.h>
+#include <thread>
+#include <mutex>
+#include <deque>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <sstream>
+#include <algorithm>
+
 	using namespace std;
 
 // Variables Globales Interpetador Shell
@@ -63,18 +72,56 @@
 			atomic<Status> status{ Status::PENDING };   // Estado actual
 			int retries = 0;                            // Número de intentos realizados
 		};
-
-// Funciones Interpretador Shell
 	
+    // Estructura para quitar espacios 
+        static inline string trim(const string& s) 
+        {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            if (a == string::npos) return "";
+            size_t b = s.find_last_not_of(" \t\r\n");
+            return s.substr(a, b - a + 1);
+        }
+
 
 // Funciones DAGman
-    void DAG_create()
+    // Detección simple de ciclos — DFS
+        bool detect_cycle_dfs(const string& node_id,
+            unordered_map<string, int>& state) 
+        { // 0=unvisited,1=visiting,2=done
+            state[node_id] = 1;
+            auto node = nodes[node_id];
+            for (const auto& dep : node->deps) 
+            {
+                if (nodes.find(dep) == nodes.end()) continue; // depende se checó antes
+                if (state[dep] == 1) return true;
+                if (state[dep] == 0) {
+                    if (detect_cycle_dfs(dep, state)) return true;
+                }
+            }
+            state[node_id] = 2;
+            return false;
+        }
+     // Funcion para detectar ciclos
+        bool has_cycle() 
+        {
+            unordered_map<string, int> state;
+            for (const auto& p : nodes) state[p.first] = 0;
+            for (const auto& p : nodes) {
+                if (state[p.first] == 0) {
+                    if (detect_cycle_dfs(p.first, state)) return true;
+                }
+            }
+            return false;
+        }
+
+    // Funcion Creacion del DAG
+        void DAG_create()
     {
         vector<string> dag_commands; // Almacena los comandos DAG escritos
         dag_commands.clear();        // Borra todos los comandos que esten almacenados en el vector
 
         cout << "Modo DAGman Iniciado \n "; 
-        cout << " Escribe comandos DAG con el siguiente formato: ArchivoSalida - Comando - Dependencias \n"; 
+        cout << " Escribe comandos DAG con el siguiente formato: ArchivoSalida - Comando - Dependencias(Separadas por coma) \n"; 
         cout << "Escribe 'DAG_execute' para ejecutar o 'DAG_exit' para salir \n";
 
         string input;                                                   // Variable con la entrada de comandos en formato DAG
@@ -101,261 +148,268 @@
         }
     }
 
-
-    void DAG_execute(vector<string>& dag_commands)
-    {
-        if (dag_commands.empty()) 
+    // Funcion Ejecucion DAG
+        void DAG_execute(std::vector<std::string>& dag_commands)
         {
-            cout << "No hay comandos DAG para ejecutar" << endl; 
-            return;
-        }
-
-        cout << "Iniciando la ejecucion del DAG " << endl; 
-
-        // Limpiar estructuras globales para nueva ejecucion
-            nodes.clear(); 
-            ready_q.clear(); 
-            remaining_tasks = 0;
-            active_tasks = 0;
-
-        // 1. Parsear todos los comandos y crear nodos
-            for (const string& dag_cmd : dag_commands) // For recorre cada comando en el vector de comandos
+            if (dag_commands.empty()) 
             {
-                // Parsear el comando DAG: ArchivoSalida - Comando - Dependencias
-                size_t first_dash = dag_cmd.find(" - "); // Busca el primer " - " en el comando DAG
-                size_t second_dash = dag_cmd.find(" - ", first_dash + 3); // Busca el segundo " - " empezando despues del primero
+                cout << "No hay comandos DAG para ejecutar" << endl; 
+                return;
+            }
 
-                // Verifica si no se encontró el primer separador (formato inválido)
-                    if (first_dash == string::npos)
+            cout << "Iniciando la ejecucion del DAG \n" << endl; 
+
+            // Limpiar estructuras globales para nueva ejecucion
+                lock_guard<mutex> lg(q_mtx);
+                nodes.clear(); 
+                ready_q.clear(); 
+                remaining_tasks = 0;
+                active_tasks = 0;
+
+            // 1. Parsear todos los comandos y crear nodos
+                for (const string& dag_cmd : dag_commands) // For recorre cada comando en el vector de comandos
+                {
+                    // Parsear el comando DAG: ArchivoSalida - Comando - Dependencias
+                    size_t first_dash = dag_cmd.find(" - "); // Busca el primer " - " en el comando DAG
+                    size_t second_dash = dag_cmd.find(" - ", first_dash + 3); // Busca el segundo " - " empezando despues del primero
+
+                    // Verifica si no se encontró el primer separador (formato inválido)
+                        if (first_dash == string::npos)
+                        {
+                            cout << "Error: Formato inválido en comando: " << dag_cmd << endl;
+                            continue;
+                        }
+                
+                
+                    string output_file = trim(dag_cmd.substr(0, first_dash)); // Extrae el nombre del archivo de salida (desde inicio hasta primer separador)
+                    string command; // Se declara un string para los comamdos
+                    vector<string> dependencies; // Se declara un vector para llevar cuenta de las dependencias
+
+                    // Verifica si no hay segundo separador (solo comando sin dependencias)
+                        if (second_dash == string::npos)
+                        {
+                            // Solo hay comando, sin dependencias
+                            command = trim(dag_cmd.substr(first_dash + 3)); // Extrae el comando (después del primer separador hasta el final)
+                        }
+                        else
+                        {
+                            // Hay comando y dependencias
+                                command = trim(dag_cmd.substr(first_dash + 3, second_dash - (first_dash + 3))); // Extrae el comando (entre primer y segundo separador)
+                                string deps_str = dag_cmd.substr(second_dash + 3); // Extrae la cadena de dependencias (después del segundo separador)
+
+                            // Parsear dependencias separadas por comas
+                            size_t start = 0;
+                            size_t end = deps_str.find(',');
+                        
+                            // Itera sobre todas las dependencias separadas por comas
+                                while (end != string::npos)
+                                {
+                                    // Agrega cada dependencia al vector
+                                        dependencies.push_back(deps_str.substr(start, end - start));
+                                        start = end + 1;
+                                        end = deps_str.find(',', start);
+                                }
+                            dependencies.push_back(deps_str.substr(start)); // Agrega la última dependencia (después de la última coma)
+                        }
+
+                    // Crear Nodo
+                    auto node = make_shared<Node>(); // Crea un nuevo nodo usando smart pointer (shared_ptr)
+               
+                    // Configura las propiedades del nodo
+                        node->id = output_file;                     // ID = archivo de salida
+                        node->cmd = command;                        // Comando a ejecutar
+                        node->deps = dependencies;                  // Lista de dependencias
+                        node->status = Status::PENDING;             // Estado inicial: pendiente
+                        node->retries = 0;                          // Contador de reintentos en 0
+                        node->indeg = dependencies.size();          // Grado de entrada = número de dependencias
+
+                
+                    
+                    nodes[output_file] = node;  // Almacena el nodo en el mapa usando el output_file como clave
+                    cout << "Nodo creado: " << output_file << " -> " << command << endl; // Muestra información del nodo creado
+                
+                    // Si hay dependencias, las muestra
+                        if (!dependencies.empty())
+                        {
+                            cout << "  Dependencias: ";
+                            for (const auto& dep : dependencies)
+                            {
+                                cout << dep << " ";
+                            }
+                            cout << endl;
+                        }
+                }
+            
+                // 2. Construir relaciones de hijos y verificar dependencias
+                    for (const auto& pair : nodes) // Itera sobre cada par clave-valor en el mapa de nodos
                     {
-                        cout << "Error: Formato inválido en comando: " << dag_cmd << endl;
-                        continue;
+                        const auto& node = pair.second; // Obtiene el nodo actual del par (pair.second contiene el shared_ptr<Node>)
+                
+                        for (const string& dep : node->deps) // Itera sobre cada dependencia del nodo actual
+                        {
+                            // Verifica si la dependencia existe en el mapa de nodos
+                                if (nodes.find(dep) == nodes.end())
+                                {
+                                    cout << "Error: Dependencia '" << dep << "' no encontrada para nodo '" << node->id << "'" << endl; // Si la dependencia no existe muestra error y termina la ejecución
+                                    return;
+                                }
+                    
+                             nodes[dep]->children.push_back(node->id); // Si la dependencia existe, agrega el nodo actual como hijo de la dependencia
+                        }
                     }
-                
-                
-                string output_file = dag_cmd.substr(0, first_dash); // Extrae el nombre del archivo de salida (desde inicio hasta primer separador)
-                string command; // Se declara un string para los comamdos
-                vector<string> dependencies; // Se declara un vector para llevar cuenta de las dependencias
 
-                // Verifica si no hay segundo separador (solo comando sin dependencias)
-                    if (second_dash == string::npos)
+                    if (has_cycle()) 
                     {
-                        // Solo hay comando, sin dependencias
-                        command = dag_cmd.substr(first_dash + 3); // Extrae el comando (después del primer separador hasta el final)
+                        cout << "Error: Se detectó un ciclo en el DAG. Abortando ejecución.\n";
+                        return;
+                    }
+
+                // 3. Inicializar cola de tareas listas (sin dependencias)
+                    {
+                        lock_guard<mutex> lock(q_mtx); // Crea un lock_guard para sincronizar el acceso a la cola (evita condiciones de carrera)
+                
+                        for (const auto& pair : nodes) // Itera sobre todos los nodos en el mapa para encontrar los listos para ejecutar
+                        {
+                            if (pair.second->indeg == 0) // Verifica si el nodo tiene grado de entrada 0 (no tiene dependencias pendientes)
+                            {
+                                ready_q.push_back(pair.second);  // Agrega el nodo a la cola de listos para ejecución
+                            }
+                        }
+                        remaining_tasks = nodes.size();  // Inicializa el contador de tareas pendientes con el total de nodos
+                    }
+            
+                    // Muestra información de depuración sobre el estado inicial
+                        cout << "Nodos listos para ejecutar: " << ready_q.size() << endl;
+                        cout << "Total de nodos: " << nodes.size() << endl;
+
+                // 4. Crear hilos workers
+
+                        vector<thread> workers; // Crea un vector para almacenar los threads workers
+                    
+                        for (int i = 0; i < max_concurrency; ++i) // Crea tantos workers como el máximo de concurrencia especificado
+                        {
+                            // Crea un nuevo thread worker con una función lambda
+                            workers.emplace_back([i]() 
+                                {
+                                    // Ciclo while que se ejecutara hasta que no haya trabajo 
+                                        while (true)
+                                        {
+                                            shared_ptr<Node> task;
+
+                                            // Obtener tarea de la cola
+                                            {
+                                                unique_lock<mutex> lock(q_mtx); // Usa unique_lock para la variable condición (permite unlock/relock)
+                                            
+                                                // Espera hasta que haya tareas en la cola O no queden tareas pendientes
+                                                    q_cv.wait(lock, []()
+                                                        {
+                                                            return !ready_q.empty() || remaining_tasks == 0;
+                                                        });
+
+                                                // Condición de salida: cola vacía y no quedan tareas pendientes
+                                                    if (ready_q.empty() && remaining_tasks == 0)
+                                                    {
+                                                        break;
+                                                    }
+                                                // Si hay tareas en la cola, toma una
+                                                    if (!ready_q.empty())
+                                                    {
+                                                        task = ready_q.front();  // Obtiene la primera tarea
+                                                        ready_q.pop_front();     // La remueve de la cola
+                                                        active_tasks++;          // Incrementa contador de tareas activas
+                                                    }
+                                            }
+                                        
+                                            // Si se obtuvo una tarea válida, procesarla
+                                                if (task)
+                                                {
+                                                    // Ejecutar la tarea
+                                                    task->status = Status::RUNNING; // Cambia el estado de la tarea a "ejecutándose"
+
+                                                    // Log: informa que comienza la ejecución
+                                                        {
+                                                            lock_guard<mutex> log_lock(log_mtx);
+                                                            cout << "[Worker " << i << "] Ejecutando: " << task->id << " -> " << task->cmd << endl;
+                                                        }
+
+                                                    // Ejecutar comando del sistema
+                                                        int result = system(task->cmd.c_str());
+
+                                                        // Log: informa el resultado de la ejecución
+                                                            {
+                                                                lock_guard<mutex> log_lock(log_mtx);
+                                                                if (result == 0)
+                                                                {
+                                                                    cout << "[Worker " << i << "] ✓ Éxito: " << task->id << endl;
+                                                                    task->status = Status::SUCCESS;
+                                                                }
+                                                                else
+                                                                {
+                                                                    cout << "[Worker " << i << "] ✗ Fallo: " << task->id << " (código: " << result << ")" << endl;
+                                                                    task->status = Status::FAILED;
+                                                                }
+                                                            }
+
+                                                    // Notificar a los hijos que esta tarea terminó
+                                                    {
+                                                        lock_guard<mutex> lock(q_mtx);
+                                                        active_tasks--;      // Reduce contador de tareas activas
+                                                        remaining_tasks--;   // Reduce contador de tareas pendientes totales
+
+                                                    
+                                                        for (const string& child_id : task->children)  // Para cada nodo hijo (dependiente) de esta tarea
+                                                        {
+                                                            auto child = nodes[child_id];
+                                                            // Reduce el grado de entrada del hijo
+                                                                if (--(child->indeg) == 0)
+                                                                {
+                                                                    ready_q.push_back(child); // Si ya no tiene dependencias pendientes, lo agrega a la cola
+                                                                }
+                                                        }
+                                                    }
+
+                                                    q_cv.notify_all(); // Notifica a todos los workers que el estado cambió
+                                                }
+                                        }
+                                });
+                        }
+
+                // 5. Esperar a que todos los workers terminen
+                    for (auto& worker : workers)
+                    {
+                        worker.join();
+                    }
+            
+
+                // Paso 6: Reporte final
+                    cout << "\n EJECUCIÓN DAG COMPLETADA " << endl;
+                    int success_count = 0;
+                    int failed_count = 0;
+
+                    for (const auto& pair : nodes)
+                    {
+                        if (pair.second->status == Status::SUCCESS)
+                        {
+                            success_count++;
+                        }
+                        else if (pair.second->status == Status::FAILED)
+                        {
+                            failed_count++;
+                            cout << "Fallo: " << pair.first << endl;
+                        }
+                    }
+
+                    cout << "Resumen: " << success_count << " éxitos, " << failed_count << " fallos" << endl;
+
+                    if (failed_count == 0)
+                    {
+                        cout << "Todos los comandos se ejecutaron exitosamente" << endl;
                     }
                     else
                     {
-                        // Hay comando y dependencias
-                            command = dag_cmd.substr(first_dash + 3, second_dash - (first_dash + 3)); // Extrae el comando (entre primer y segundo separador)
-                            string deps_str = dag_cmd.substr(second_dash + 3); // Extrae la cadena de dependencias (después del segundo separador)
-
-                        // Parsear dependencias separadas por comas
-                        size_t start = 0;
-                        size_t end = deps_str.find(',');
-                        
-                        // Itera sobre todas las dependencias separadas por comas
-                            while (end != string::npos)
-                            {
-                                // Agrega cada dependencia al vector
-                                    dependencies.push_back(deps_str.substr(start, end - start));
-                                    start = end + 1;
-                                    end = deps_str.find(',', start);
-                            }
-                        dependencies.push_back(deps_str.substr(start)); // Agrega la última dependencia (después de la última coma)
+                        cout << "Algunos comandos fallaron" << endl;
                     }
-
-                // Crear Nodo
-                auto node = make_shared<Node>(); // Crea un nuevo nodo usando smart pointer (shared_ptr)
-               
-                // Configura las propiedades del nodo
-                    node->id = output_file;                     // ID = archivo de salida
-                    node->cmd = command;                        // Comando a ejecutar
-                    node->deps = dependencies;                  // Lista de dependencias
-                    node->status = Status::PENDING;             // Estado inicial: pendiente
-                    node->retries = 0;                          // Contador de reintentos en 0
-                    node->indeg = dependencies.size();          // Grado de entrada = número de dependencias
-
-                
-                    
-                nodes[output_file] = node;  // Almacena el nodo en el mapa usando el output_file como clave
-                cout << "Nodo creado: " << output_file << " -> " << command << endl; // Muestra información del nodo creado
-                
-                // Si hay dependencias, las muestra
-                    if (!dependencies.empty())
-                    {
-                        cout << "  Dependencias: ";
-                        for (const auto& dep : dependencies)
-                        {
-                            cout << dep << " ";
-                        }
-                        cout << endl;
-                    }
-            }
-            
-            // 2. Construir relaciones de hijos y verificar dependencias
-                for (const auto& pair : nodes) // Itera sobre cada par clave-valor en el mapa de nodos
-                {
-                    const auto& node = pair.second; // Obtiene el nodo actual del par (pair.second contiene el shared_ptr<Node>)
-                
-                    for (const string& dep : node->deps) // Itera sobre cada dependencia del nodo actual
-                    {
-                        // Verifica si la dependencia existe en el mapa de nodos
-                            if (nodes.find(dep) == nodes.end())
-                            {
-                                cout << "Error: Dependencia '" << dep << "' no encontrada para nodo '" << node->id << "'" << endl; // Si la dependencia no existe muestra error y termina la ejecución
-                                return;
-                            }
-                    
-                         nodes[dep]->children.push_back(node->id); // Si la dependencia existe, agrega el nodo actual como hijo de la dependencia
-                    }
-                }
-
-            // 3. Inicializar cola de tareas listas (sin dependencias)
-                {
-                    lock_guard<mutex> lock(q_mtx); // Crea un lock_guard para sincronizar el acceso a la cola (evita condiciones de carrera)
-                
-                    for (const auto& pair : nodes) // Itera sobre todos los nodos en el mapa para encontrar los listos para ejecutar
-                    {
-                        if (pair.second->indeg == 0) // Verifica si el nodo tiene grado de entrada 0 (no tiene dependencias pendientes)
-                        {
-                            ready_q.push_back(pair.second);  // Agrega el nodo a la cola de listos para ejecución
-                        }
-                    }
-                    remaining_tasks = nodes.size();  // Inicializa el contador de tareas pendientes con el total de nodos
-                }
-            
-                // Muestra información de depuración sobre el estado inicial
-                    cout << "Nodos listos para ejecutar: " << ready_q.size() << endl;
-                    cout << "Total de nodos: " << nodes.size() << endl;
-
-            // 4. Crear hilos workers
-
-                    vector<thread> workers; // Crea un vector para almacenar los threads workers
-                    
-                    for (int i = 0; i < max_concurrency; ++i) // Crea tantos workers como el máximo de concurrencia especificado
-                    {
-                        // Crea un nuevo thread worker con una función lambda
-                        workers.emplace_back([i]() 
-                            {
-                                // Ciclo while que se ejecutara hasta que no haya trabajo 
-                                    while (true)
-                                    {
-                                        shared_ptr<Node> task;
-
-                                        // Obtener tarea de la cola
-                                        {
-                                            unique_lock<mutex> lock(q_mtx); // Usa unique_lock para la variable condición (permite unlock/relock)
-                                            
-                                            // Espera hasta que haya tareas en la cola O no queden tareas pendientes
-                                                q_cv.wait(lock, []()
-                                                    {
-                                                        return !ready_q.empty() || remaining_tasks == 0;
-                                                    });
-
-                                            // Condición de salida: cola vacía y no quedan tareas pendientes
-                                                if (ready_q.empty() && remaining_tasks == 0)
-                                                {
-                                                    break;
-                                                }
-                                            // Si hay tareas en la cola, toma una
-                                                if (!ready_q.empty())
-                                                {
-                                                    task = ready_q.front();  // Obtiene la primera tarea
-                                                    ready_q.pop_front();     // La remueve de la cola
-                                                    active_tasks++;          // Incrementa contador de tareas activas
-                                                }
-                                        }
-                                        
-                                        // Si se obtuvo una tarea válida, procesarla
-                                            if (task)
-                                            {
-                                                // Ejecutar la tarea
-                                                task->status = Status::RUNNING; // Cambia el estado de la tarea a "ejecutándose"
-
-                                                // Log: informa que comienza la ejecución
-                                                    {
-                                                        lock_guard<mutex> log_lock(log_mtx);
-                                                        cout << "[Worker " << i << "] Ejecutando: " << task->id << " -> " << task->cmd << endl;
-                                                    }
-
-                                                // Ejecutar comando del sistema
-                                                    int result = system(task->cmd.c_str());
-
-                                                    // Log: informa el resultado de la ejecución
-                                                        {
-                                                            lock_guard<mutex> log_lock(log_mtx);
-                                                            if (result == 0)
-                                                            {
-                                                                cout << "[Worker " << i << "] ✓ Éxito: " << task->id << endl;
-                                                                task->status = Status::SUCCESS;
-                                                            }
-                                                            else
-                                                            {
-                                                                cout << "[Worker " << i << "] ✗ Fallo: " << task->id << " (código: " << result << ")" << endl;
-                                                                task->status = Status::FAILED;
-                                                            }
-                                                        }
-
-                                                // Notificar a los hijos que esta tarea terminó
-                                                {
-                                                    lock_guard<mutex> lock(q_mtx);
-                                                    active_tasks--;      // Reduce contador de tareas activas
-                                                    remaining_tasks--;   // Reduce contador de tareas pendientes totales
-
-                                                    
-                                                    for (const string& child_id : task->children)  // Para cada nodo hijo (dependiente) de esta tarea
-                                                    {
-                                                        auto child = nodes[child_id];
-                                                        // Reduce el grado de entrada del hijo
-                                                            if (--(child->indeg) == 0)
-                                                            {
-                                                                ready_q.push_back(child); // Si ya no tiene dependencias pendientes, lo agrega a la cola
-                                                            }
-                                                    }
-                                                }
-
-                                                q_cv.notify_all(); // Notifica a todos los workers que el estado cambió
-                                            }
-                                    }
-                            });
-                    }
-
-            // 5. Esperar a que todos los workers terminen
-                for (auto& worker : workers)
-                {
-                    worker.join();
-                }
-            
-
-            // Paso 6: Reporte final
-                cout << "\n EJECUCIÓN DAG COMPLETADA " << endl;
-                int success_count = 0;
-                int failed_count = 0;
-
-                for (const auto& pair : nodes)
-                {
-                    if (pair.second->status == Status::SUCCESS)
-                    {
-                        success_count++;
-                    }
-                    else if (pair.second->status == Status::FAILED)
-                    {
-                        failed_count++;
-                        cout << "Fallo: " << pair.first << endl;
-                    }
-                }
-
-                cout << "Resumen: " << success_count << " éxitos, " << failed_count << " fallos" << endl;
-
-                if (failed_count == 0)
-                {
-                    cout << "Todos los comandos se ejecutaron exitosamente" << endl;
-                }
-                else
-                {
-                    cout << "Algunos comandos fallaron" << endl;
-                }
-    }
+        }
 
 // Funciones Interpretador_Shell
 
@@ -542,16 +596,9 @@
         
         
         // Comando "DAG_create()"
-        command["DAG_create()"] = [](char* []) -> bool
+        command["DAG_create"] = [](char* []) -> bool
             {
                 DAG_create();
-                return true;
-            };
-
-        // Comando "DAG_execute()"
-        command["DAG_execute()"] = [](char* []) -> bool
-            {
-                DAG_execute();
                 return true;
             };
 
