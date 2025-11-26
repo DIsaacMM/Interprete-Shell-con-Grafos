@@ -30,7 +30,7 @@ using namespace std;
 #define MAX_COMMAND_LENGHT 1024 // Numero maximo de caracteres por comando
 
 // Estructuras Interpretador Shell
-    // Almacenamiento del historial de comandos
+// Almacenamiento del historial de comandos
 static std::string history[MAX_HISTORY];
 static int history_count = 0; // Contador de comandos en historial
 static int current_index = 0; // Índice actual para navegación
@@ -42,7 +42,7 @@ static struct termios orig_termios; // Configuración original de la terminal
 std::unordered_map<std::string, std::function<bool(char* [])>> command;
 
 // Estructuras DAGman
-    //    Estado actual de un nodo (tarea)
+// Estado actual de un nodo (tarea)
 enum class Status
 {
     PENDING,  // La tarea aún no se ha ejecutado
@@ -63,6 +63,11 @@ struct Node
     int retries = 0;                            // Número de intentos realizados
 };
 
+// Prototipos
+bool detect_cycle_dfs(const string& node_id, unordered_map<string, int>& state);
+bool has_cycle();
+void DAG_execute(std::vector<std::string>& dag_commands);
+
 // Estructura para quitar espacios 
 static inline string trim(const string& s)
 {
@@ -71,8 +76,6 @@ static inline string trim(const string& s)
     size_t b = s.find_last_not_of(" \t\r\n");
     return s.substr(a, b - a + 1);
 }
-
-
 
 // Variables Globales DAGman
 unordered_map<string, shared_ptr<Node>> nodes; // Hash map global de nodos
@@ -85,9 +88,8 @@ int max_concurrency = 4;                       // Máximo de tareas (hilos) que 
 int max_retries = 1;                           // Reintentos máximos por tarea
 
 
-
 // Funciones DAGman
-    // Detección simple de ciclos — DFS
+// Detección simple de ciclos — DFS
 bool detect_cycle_dfs(const string& node_id,
     unordered_map<string, int>& state)
 { // 0=unvisited,1=visiting,2=done
@@ -231,6 +233,13 @@ void DAG_execute(std::vector<std::string>& dag_commands)
             continue;
         }
 
+        // Evitar sobreescribir nodos existentes accidentalmente
+        if (nodes.find(output_file) != nodes.end())
+        {
+            cout << "Advertencia: Nodo con id '" << output_file << "' ya existe. Se omite la nueva definición." << endl;
+            continue;
+        }
+
         // Crear Nodo
         auto node = make_shared<Node>(); // Crea un nuevo nodo usando smart pointer (shared_ptr)
 
@@ -238,16 +247,9 @@ void DAG_execute(std::vector<std::string>& dag_commands)
         node->id = output_file;                     // ID = archivo de salida
         node->cmd = command;                        // Comando a ejecutar
         node->deps = dependencies;                  // Lista de dependencias
-        node->status = Status::PENDING;             // Estado inicial: pendiente
+        node->status.store(Status::PENDING);             // Estado inicial: pendiente
         node->retries = 0;                          // Contador de reintentos en 0
-        node->indeg = static_cast<int>(dependencies.size());          // Grado de entrada = número de dependencias
-
-        // Evitar sobreescribir nodos existentes accidentalmente
-        if (nodes.find(output_file) != nodes.end())
-        {
-            cout << "Advertencia: Nodo con id '" << output_file << "' ya existe. Se omite la nueva definición." << endl;
-            continue;
-        }
+        node->indeg.store(static_cast<int>(dependencies.size()));          // Grado de entrada = número de dependencias
 
         nodes[output_file] = node;  // Almacena el nodo en el mapa usando el output_file como clave
         cout << "Nodo creado: " << output_file << " -> " << command << endl; // Muestra información del nodo creado
@@ -294,7 +296,7 @@ void DAG_execute(std::vector<std::string>& dag_commands)
 
         for (const auto& pair : nodes) // Itera sobre todos los nodos en el mapa para encontrar los listos para ejecutar
         {
-            if (pair.second->indeg == 0) // Verifica si el nodo tiene grado de entrada 0 (no tiene dependencias pendientes)
+            if (pair.second->indeg.load() == 0) // Verifica si el nodo tiene grado de entrada 0 (no tiene dependencias pendientes)
             {
                 ready_q.push_back(pair.second);  // Agrega el nodo a la cola de listos para ejecución
             }
@@ -348,7 +350,7 @@ void DAG_execute(std::vector<std::string>& dag_commands)
                     if (task)
                     {
                         // Ejecutar la tarea
-                        task->status = Status::RUNNING; // Cambia el estado de la tarea a "ejecutándose"
+                        task->status.store(Status::RUNNING); // Cambia el estado de la tarea a "ejecutándose"
 
                         // Log: informa que comienza la ejecución
                         {
@@ -356,32 +358,18 @@ void DAG_execute(std::vector<std::string>& dag_commands)
                             cout << "[Worker " << i << "] Ejecutando: " << task->id << " -> " << task->cmd << endl;
                         }
 
-                        // Ejecutar comando del sistema usando fork+execvp
+                        // Ejecutar comando del sistema usando fork+execvp (ejecutar a través de /bin/sh -c para soportar redirecciones/pipes/quotes)
                         pid_t pid = fork();
                         int result = -1;
                         if (pid == 0)
                         {
-                            // child
-                            // Preparar args para execvp
-                            // tokenizar el comando simple (no manejo de quotes o pipes aquí)
-                            // Convierte a vector<char*> para execvp
-                            vector<string> parts;
-                            {
-                                istringstream iss(task->cmd);
-                                string tok;
-                                while (iss >> tok) parts.push_back(tok);
-                            }
-                            if (parts.empty())
-                            {
-                                // comando vacío -> considera como fallo
-                                _exit(EXIT_FAILURE);
-                            }
-                            vector<char*> argv;
-                            for (auto& s : parts) argv.push_back(const_cast<char*>(s.c_str()));
-                            argv.push_back(nullptr);
-                            execvp(argv[0], argv.data());
+                            // child: delegar parsing al shell para soportar redirecciones, pipes y quotes
+                            const char* shell = "/bin/sh";
+                            const char* shell_arg = "-c";
+                            char* const argv_shell[] = { const_cast<char*>(shell), const_cast<char*>(shell_arg), const_cast<char*>(task->cmd.c_str()), nullptr };
+                            execvp(shell, argv_shell);
                             // Si execvp retorna, error
-                            perror("execvp failed");
+                            perror("execvp(/bin/sh) failed");
                             _exit(EXIT_FAILURE);
                         }
                         else if (pid > 0)
@@ -415,12 +403,12 @@ void DAG_execute(std::vector<std::string>& dag_commands)
                             if (result == 0)
                             {
                                 cout << "[Worker " << i << "] ✓ Éxito: " << task->id << endl;
-                                task->status = Status::SUCCESS;
+                                task->status.store(Status::SUCCESS);
                             }
                             else
                             {
                                 cout << "[Worker " << i << "] ✗ Fallo: " << task->id << " (código: " << result << ")" << endl;
-                                task->status = Status::FAILED;
+                                task->status.store(Status::FAILED);
                             }
                         }
 
@@ -429,11 +417,11 @@ void DAG_execute(std::vector<std::string>& dag_commands)
                             lock_guard<mutex> lock(q_mtx);
                             active_tasks--;      // Reduce contador de tareas activas
 
-                            if (task->status == Status::FAILED && task->retries < max_retries)
+                            if (task->status.load() == Status::FAILED && task->retries < max_retries)
                             {
                                 // Reintentar: incrementar reintentos y volver a encolar
                                 task->retries++;
-                                task->status = Status::PENDING;
+                                task->status.store(Status::PENDING);
                                 ready_q.push_back(task);
                                 // remaining_tasks permanece igual porque la tarea aún no se considera finalizada
                             }
@@ -445,8 +433,8 @@ void DAG_execute(std::vector<std::string>& dag_commands)
                                 for (const string& child_id : task->children)  // Para cada nodo hijo (dependiente) de esta tarea
                                 {
                                     auto child = nodes[child_id];
-                                    // Reduce el grado de entrada del hijo
-                                    if (--(child->indeg) == 0)
+                                    int new_indeg = child->indeg.fetch_sub(1) - 1; // fetch_sub devuelve valor previo
+                                    if (new_indeg == 0)
                                     {
                                         ready_q.push_back(child); // Si ya no tiene dependencias pendientes, lo agrega a la cola
                                     }
@@ -474,11 +462,12 @@ void DAG_execute(std::vector<std::string>& dag_commands)
 
     for (const auto& pair : nodes)
     {
-        if (pair.second->status == Status::SUCCESS)
+        Status s = pair.second->status.load();
+        if (s == Status::SUCCESS)
         {
             success_count++;
         }
-        else if (pair.second->status == Status::FAILED)
+        else if (s == Status::FAILED)
         {
             failed_count++;
             cout << "Fallo: " << pair.first << endl;
@@ -499,7 +488,7 @@ void DAG_execute(std::vector<std::string>& dag_commands)
 
 // Funciones Interpretador_Shell
 
-    // Restaura el modo normal de la terminal 
+// Restaura el modo normal de la terminal 
 void disable_raw_mode()
 {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
@@ -508,7 +497,7 @@ void disable_raw_mode()
 // Activa el modo raw (sin buffering, sin echo)
 void enable_raw_mode()
 {
-    tcgetattr(STDIN_FILENO, &orig_termios); // Obtener configuración actual de la terminal
+    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) return; // si falla, no intentar cambiar
     atexit(disable_raw_mode); // Registrar función de limpieza al salir
 
     struct termios raw = orig_termios; // Configurar nueva estructura para modo raw
